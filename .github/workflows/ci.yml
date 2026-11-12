@@ -155,3 +155,4 @@ jobs:
           tags: ${{ env.IMAGE }}-console:${{ github.ref_name }}
           provenance: true
           sbom: true
+
