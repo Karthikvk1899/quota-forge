@@ -12,29 +12,33 @@ concurrency:
   cancel-in-progress: true
 jobs:
   codeql:
-    name: CodeQL security analysis
+    name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: java-kotlin
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
     steps:
       - uses: actions/checkout@v5
       - uses: github/codeql-action/init@v4
         with:
-          languages: java-kotlin,javascript-typescript
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
       - uses: actions/setup-java@v5
+        if: matrix.language == 'java-kotlin'
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - run: mvn --batch-mode --no-transfer-progress -DskipTests package
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - run: npm ci && npm run build
-        working-directory: ui
+      - if: matrix.language == 'java-kotlin'
+        run: mvn --batch-mode --no-transfer-progress -DskipTests package
       - uses: github/codeql-action/analyze@v4
   verify:
     runs-on: ubuntu-24.04
