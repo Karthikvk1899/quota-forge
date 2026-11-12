@@ -4,7 +4,7 @@ COPY pom.xml .
 RUN mvn -B dependency:go-offline
 COPY src ./src
 RUN mvn -B -DskipTests package
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:25-jre-alpine
 RUN addgroup -S quota && adduser -S quota -G quota
 WORKDIR /app
 COPY --from=build --chown=quota:quota /build/target/quota-forge-0.1.0.jar app.jar
