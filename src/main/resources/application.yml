@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: quota-forge
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+      connect-timeout: 2s
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        delivery.timeout.ms: 10000
+        request.timeout.ms: 5000
+        max.block.ms: 2000
+    consumer:
+      group-id: quota-forge-projection-v1
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
+server:
+  shutdown: graceful
+  error:
+    include-message: never
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+app:
+  api-key: ${QUOTA_API_KEY}
+  limit: ${QUOTA_LIMIT:100}
+  window-ms: ${QUOTA_WINDOW_MS:60000}
+  outbox-capacity: ${QUOTA_OUTBOX_CAPACITY:10000}
+  topic: quota-decisions-v1
+  topic-replicas: ${KAFKA_TOPIC_REPLICAS:1}
+  relay-delay-ms: 250

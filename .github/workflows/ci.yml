@@ -1,0 +1,128 @@
+name: Verify and publish
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Unit and real Redis/Kafka integration tests
+        run: mvn --batch-mode --no-transfer-progress verify
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: ui
+      - name: Validate Compose
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+        run: docker compose config --quiet
+      - name: Build application and console containers
+        run: docker compose build
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+      - name: Start stack and exercise HTTP, audit, and Redis failure recovery
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+        run: |
+          docker compose up -d --wait --wait-timeout 180
+          python3 - <<'PYTHON'
+          import json, os, time, uuid, urllib.request, urllib.error, subprocess
+          key = os.environ['QUOTA_API_KEY']
+          def request(path, body=None, auth=True):
+              headers = {'Content-Type': 'application/json'}
+              if auth: headers['Authorization'] = 'Bearer ' + key
+              req = urllib.request.Request('http://127.0.0.1:8080' + path,
+                  data=json.dumps(body).encode() if body is not None else None, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as res:
+                      return res.status, res.read()
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read()
+          assert request('/')[0] == 200
+          assert request('/api/dashboard', auth=False)[0] == 401
+          payload = {'subject': 'ci/smoke', 'requestId': str(uuid.uuid4())}
+          status, raw = request('/api/decisions', payload)
+          assert status == 200, raw
+          first = json.loads(raw)
+          assert json.loads(request('/api/decisions', payload)[1]) == first
+          deadline = time.monotonic() + 30
+          while True:
+              status, raw = request('/api/dashboard')
+              data = json.loads(raw)
+              if any(row['eventId'] == first['eventId'] for row in data['recent']): break
+              assert time.monotonic() < deadline, 'Audit did not reach projection'
+              time.sleep(0.5)
+          subprocess.run(['docker', 'compose', 'stop', 'redis'], check=True)
+          assert request('/api/decisions', {'subject': 'ci/outage', 'requestId': str(uuid.uuid4())})[0] == 503
+          subprocess.run(['docker', 'compose', 'start', 'redis'], check=True)
+          deadline = time.monotonic() + 30
+          while request('/api/decisions', payload)[0] != 200:
+              assert time.monotonic() < deadline, 'Redis recovery timed out'
+              time.sleep(0.5)
+          assert json.loads(request('/api/decisions', payload)[1]) == first
+          print('Compose smoke passed: UI, authentication, permit replay, Kafka projection, Redis fail-closed and recovery')
+          PYTHON
+      - name: Compose diagnostics
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+      - name: Stop local test stack
+        if: always()
+        run: docker compose down
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: integration-test-reports
+          path: target/*-reports/
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set lowercase image namespace
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+          provenance: true
+          sbom: true
+      - uses: docker/build-push-action@v6
+        with:
+          context: ui
+          push: true
+          tags: ${{ env.IMAGE }}-console:${{ github.ref_name }}
+          provenance: true
+          sbom: true
