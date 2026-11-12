@@ -17,7 +17,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class AdmissionService {
     public static final int SHARDS = 16; // Changing this requires an explicit state migration.
-    public record Decision(String eventId, String requestId, String subject, boolean allowed,
+    public record Decision(int schemaVersion, String eventId, String requestId, String subject, boolean allowed,
                            int remaining, long retryAfterMs, long timestamp, int limit, long windowMs) {}
     private final StringRedisTemplate redis;
     private final ObjectMapper mapper;

@@ -59,6 +59,8 @@ Repeat the same body to replay the original decision. Use a new UUID for a new a
 | `GET /actuator/health` | Health endpoint; exposed internally without credentials |
 | `GET /actuator/prometheus` | Authenticated internal metrics |
 
+The complete machine-readable contract is in [`docs/openapi.yaml`](docs/openapi.yaml). Kafka decision events carry `schemaVersion: 1`; consumers reject unknown versions instead of silently interpreting an incompatible payload.
+
 429 responses contain `Retry-After` (rounded up to seconds), `X-RateLimit-Limit`, and `X-RateLimit-Remaining`. Cached retries preserve the original retry interval; it is conservative, not a newly calculated countdown. Dashboard totals reflect consumed unique audit events; Prometheus request counters include retries.
 
 ## Verification and delivery

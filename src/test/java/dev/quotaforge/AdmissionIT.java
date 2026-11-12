@@ -120,6 +120,13 @@ class AdmissionIT {
         var rows=redis.opsForList().range(AuditPipeline.RECENT,0,-1);
         assertThat(rows.stream().filter(v->v.contains(d.eventId())).count()).isEqualTo(1);
     }
+    @Test void projectionRejectsUnknownEventSchema() throws Exception {
+        var decision=service.decide(subject(),UUID.randomUUID());
+        String payload=mapper.writeValueAsString(decision).replace("\"schemaVersion\":1", "\"schemaVersion\":2");
+        assertThatThrownBy(()->pipeline.project(payload))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Unsupported decision schema version: 2");
+    }
     @Test void httpAuthenticationValidationAndRateLimitContract() {
         assertThat(http.getForEntity("/api/dashboard",String.class).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         HttpHeaders headers=new HttpHeaders(); headers.setBearerAuth(KEY);headers.setContentType(MediaType.APPLICATION_JSON);

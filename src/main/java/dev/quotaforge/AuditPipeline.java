@@ -82,6 +82,9 @@ public class AuditPipeline {
     @KafkaListener(topics = "${app.topic}")
     public void project(String payload) throws Exception {
         var decision = mapper.readValue(payload, AdmissionService.Decision.class);
+        if (decision.schemaVersion() != 1) {
+            throw new IllegalArgumentException("Unsupported decision schema version: " + decision.schemaVersion());
+        }
         UUIDCheck.validate(decision.eventId());
         redis.execute(projection, List.of("qf:{projection}:seen:" + decision.eventId(), STATS, RECENT),
             decision.allowed() ? "allowed" : "denied", payload);

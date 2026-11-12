@@ -1,0 +1,130 @@
+openapi: 3.1.0
+info:
+  title: Quota Forge API
+  version: 1.0.0
+  description: Distributed sliding-window admission control for trusted service callers.
+servers:
+  - url: http://localhost:8080
+    description: Local Docker Compose console proxy
+security:
+  - bearerAuth: []
+paths:
+  /api/decisions:
+    post:
+      operationId: requestPermit
+      summary: Request or replay an admission decision
+      description: Reusing the same subject and requestId returns the original decision while its retry record is retained.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionRequest'
+      responses:
+        '200':
+          description: The operation is admitted.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/Limit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Decision' }
+        '400':
+          description: The request body failed validation.
+        '401':
+          description: The bearer credential is missing or invalid.
+        '429':
+          description: The subject exhausted its current window.
+          headers:
+            Retry-After:
+              description: Conservative delay in seconds before another new attempt.
+              schema: { type: integer, minimum: 1 }
+            X-RateLimit-Limit: { $ref: '#/components/headers/Limit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/Remaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Decision' }
+        '503':
+          description: Redis is unavailable, policy differs between replicas, or the bounded audit backlog is full. Retry with the same requestId.
+  /api/dashboard:
+    get:
+      operationId: getDashboard
+      summary: Read policy, audit totals, shard backlog, and recent decisions
+      responses:
+        '200':
+          description: Current operational projection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dashboard' }
+        '401':
+          description: The bearer credential is missing or invalid.
+        '503':
+          description: Redis is unavailable.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque service credential
+  headers:
+    Limit:
+      description: Configured permits per window.
+      schema: { type: integer, minimum: 1 }
+    Remaining:
+      description: Remaining permits after this decision.
+      schema: { type: integer, minimum: 0 }
+  schemas:
+    DecisionRequest:
+      type: object
+      required: [subject, requestId]
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:@/-]+$'
+        requestId:
+          type: string
+          format: uuid
+    Decision:
+      type: object
+      required: [schemaVersion, eventId, requestId, subject, allowed, remaining, retryAfterMs, timestamp, limit, windowMs]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        eventId: { type: string, format: uuid }
+        requestId: { type: string, format: uuid }
+        subject:
+          type: string
+          description: SHA-256 hash of the caller-supplied subject.
+          pattern: '^[a-f0-9]{64}$'
+        allowed: { type: boolean }
+        remaining: { type: integer, minimum: 0 }
+        retryAfterMs: { type: integer, format: int64, minimum: 0 }
+        timestamp: { type: integer, format: int64, description: Redis server time in Unix milliseconds. }
+        limit: { type: integer, minimum: 1 }
+        windowMs: { type: integer, format: int64, minimum: 100 }
+    Dashboard:
+      type: object
+      required: [policy, totals, backlog, recent]
+      properties:
+        policy:
+          type: object
+          required: [limit, windowMs, outboxCapacityPerShard]
+          properties:
+            limit: { type: integer, minimum: 1 }
+            windowMs: { type: integer, format: int64, minimum: 100 }
+            outboxCapacityPerShard: { type: integer, minimum: 1 }
+        totals:
+          type: object
+          additionalProperties:
+            type: string
+            pattern: '^\d+$'
+        backlog:
+          type: array
+          minItems: 16
+          maxItems: 16
+          items: { type: integer, format: int64, minimum: 0 }
+        recent:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/Decision' }

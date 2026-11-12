@@ -21,7 +21,7 @@ end
 local first = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
 local retry = 0
 if not allowed then retry = math.max(1, tonumber(first[2]) + window - now) end
-local result = cjson.encode({eventId=ARGV[6], requestId=ARGV[4], subject=ARGV[5],
+local result = cjson.encode({schemaVersion=1, eventId=ARGV[6], requestId=ARGV[4], subject=ARGV[5],
   allowed=allowed, remaining=math.max(0, limit-used), retryAfterMs=retry,
   timestamp=now, limit=limit, windowMs=window})
 redis.call('SET', KEYS[4], expected)
