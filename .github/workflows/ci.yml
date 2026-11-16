@@ -1,31 +1,158 @@
-name: Apply reviewed source fixes
-on: [push, workflow_dispatch]
+name: Verify and publish
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  publish:
-    if: github.actor == 'Karthikvk1899'
+  codeql:
+    name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: java-kotlin
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Apply reviewed source patch
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        if: matrix.language == 'java-kotlin'
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - if: matrix.language == 'java-kotlin'
+        run: mvn --batch-mode --no-transfer-progress -DskipTests package
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Unit and real Redis/Kafka integration tests
+        run: mvn --batch-mode --no-transfer-progress verify
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci && npm audit --audit-level=moderate && npm run build
+        working-directory: ui
+      - name: Validate Compose
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+        run: docker compose config --quiet
+      - name: Build application and console containers
+        run: docker compose build
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+      - name: Start stack and exercise HTTP, audit, and Redis failure recovery
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
         run: |
+          docker compose up -d --wait --wait-timeout 180
           python3 - <<'PYTHON'
-          import base64,json,zlib,pathlib
-          data=json.loads(zlib.decompress(base64.b64decode('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')))
-          for name,content in data['files'].items():
-              p=pathlib.Path(name)
-              assert not p.is_absolute() and '..' not in p.parts and not name.startswith('.github/workflows/')
-              p.parent.mkdir(parents=True,exist_ok=True)
-              p.write_text(content)
-          for name in data['deleted']:
-              p=pathlib.Path(name)
-              assert not p.is_absolute() and '..' not in p.parts and not name.startswith('.github/workflows/')
-              p.unlink(missing_ok=True)
+          import json, os, time, uuid, urllib.request, urllib.error, subprocess
+          key = os.environ['QUOTA_API_KEY']
+          def request(path, body=None, auth=True):
+              headers = {'Content-Type': 'application/json'}
+              if auth: headers['Authorization'] = 'Bearer ' + key
+              req = urllib.request.Request('http://127.0.0.1:8080' + path,
+                  data=json.dumps(body).encode() if body is not None else None, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as res:
+                      return res.status, res.read()
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read()
+          assert request('/')[0] == 200
+          assert request('/api/dashboard', auth=False)[0] == 401
+          payload = {'subject': 'ci/smoke', 'requestId': str(uuid.uuid4())}
+          status, raw = request('/api/decisions', payload)
+          assert status == 200, raw
+          first = json.loads(raw)
+          assert json.loads(request('/api/decisions', payload)[1]) == first
+          deadline = time.monotonic() + 30
+          while True:
+              status, raw = request('/api/dashboard')
+              data = json.loads(raw)
+              if any(row['eventId'] == first['eventId'] for row in data['recent']): break
+              assert time.monotonic() < deadline, 'Audit did not reach projection'
+              time.sleep(0.5)
+          subprocess.run(['docker', 'compose', 'stop', 'redis'], check=True)
+          assert request('/api/decisions', {'subject': 'ci/outage', 'requestId': str(uuid.uuid4())})[0] == 503
+          subprocess.run(['docker', 'compose', 'start', 'redis'], check=True)
+          deadline = time.monotonic() + 30
+          while request('/api/decisions', payload)[0] != 200:
+              assert time.monotonic() < deadline, 'Redis recovery timed out'
+              time.sleep(0.5)
+          assert json.loads(request('/api/decisions', payload)[1]) == first
+          print('Compose smoke passed: UI, authentication, permit replay, Kafka projection, Redis fail-closed and recovery')
           PYTHON
-          git config user.name 'Karthik Beesa'
-          git config user.email '261053759+Karthikvk1899@users.noreply.github.com'
-          git add .
-          git diff --cached --quiet || git commit -m 'Fix safety behavior, dependency hygiene, and verification coverage'
-          git push
+      - name: Compose diagnostics
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+      - name: Stop local test stack
+        if: always()
+        run: docker compose down
+        env:
+          QUOTA_API_KEY: ci-configuration-only-not-a-production-secret
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: integration-test-reports
+          path: target/*-reports/
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, codeql]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set lowercase image namespace
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+          provenance: true
+          sbom: true
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: ui
+          push: true
+          tags: ${{ env.IMAGE }}-console:${{ github.ref_name }}
+          provenance: true
+          sbom: true
+
